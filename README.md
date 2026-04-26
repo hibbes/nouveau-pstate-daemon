@@ -43,6 +43,70 @@ transition available on this silicon. The daemon does **not** touch `0f`
 without manual override, because `0f` requires the voltage controller
 to be exercised and that path is less verified on Apple-branded VBIOS.
 
+## Background: why 03 ↔ 0e and not 0f
+
+The Apple Mac mini Late 2009 VBIOS exposes four pstates: `03`, `05`, `0e`,
+and `0f`. The daemon only ever toggles between `03` and `0e`. This section
+documents why.
+
+### `05` is functionally identical to `03`
+
+Both report `core 150 MHz / shader 300 MHz / 0.90V`. They differ only in
+the memory-timing index they reference (96 vs 131). On NVAC the memory
+clock is hardcoded to 0 in `nvkm/subdev/clk/mcp77.c` (the IGP shares the
+host's memory controller, so there is nothing to reclock), which makes the
+timing index difference moot. There is no power or performance benefit to
+switching to `05` over `03`.
+
+### `0f` is empirically slower than `0e`
+
+Measured `glxgears -geometry 800x800` with `vblank_mode=0`:
+
+| pstate | clocks | voltage | FPS |
+|---|---|---|---|
+| `03` | 150 / 300 MHz | 0.90 V | 216 |
+| `0e` | 350 / 800 MHz | 0.90 V | 484 |
+| `0f` | 450 / 1100 MHz | 1.01 V | 367 (slower than `0e`!) |
+
+The cause is in nouveau itself, not the VBIOS. `nvkm_voltgpio_init()` in
+`drivers/gpu/drm/nouveau/nvkm/subdev/volt/gpio.c` walks the
+`vid_mask` parsed from the VBIOS voltage table and tries to resolve each
+bit to a board GPIO line via the GPIO table. If a GPIO is missing, the
+code masks the bit out and continues, with a debug-level log line and no
+error. The relevant comment from the source:
+
+> on some boards the vid mask has more bits than there are valid gpio
+> functions ... from traces, nvidia appear to just touch the existing
+> ones, so let's mask off the invalid bits and continue with life
+
+On the Apple MCP79 VBIOS the GPIO table only declares display-related
+pins (`HPD_0`, `HPD_1`, `DP_EXT_1`); no VID GPIO entries exist. As a
+result the voltage write for any pstate transition is silently a no-op,
+and `nvkm_volt_set()` returns success. Pstate `0e` and pstate `03` happen
+to share the same `0.90 V` voltage entry, so this no-op is harmless for
+them. Pstate `0f` would need `1.01 V` but never gets it, so the shader
+is asked to run at 1100 MHz on the same `0.90 V` rail it used at 800 MHz
+— a ~38% undervolt relative to spec. The resulting shader-stage stalls
+and replays explain the throughput collapse from 484 to 367 FPS.
+
+The underlying VBIOS issue (missing VID GPIO entries) is an Apple-
+firmware peculiarity, not a nouveau bug. The driver's silent masking is
+a deliberate compatibility behavior. Without firmware modification — for
+which no community tooling exists on Apple MCP79 boards — pstate `0f`
+will continue to underperform `0e` on this hardware, so the daemon
+intentionally avoids it.
+
+### Avoiding `0f` also dodges a wider question
+
+Even on hardware where the GPIO table is complete, raising the GPU rail
+to `1.01 V` enters territory that has not been independently verified by
+this project. On NVAC specifically, the GPU is the IGP block of the
+MCP79 northbridge — the *only* northbridge on the board, carrying the
+PCIe root complex, the host memory controller, and the platform DMI
+link. A voltage-related fault is a whole-system fault, not a graphics
+fault. Skipping `0f` keeps the entire daemon firmly inside the
+voltage-neutral envelope and avoids inheriting that risk class.
+
 ## Inspiration / prior art
 
 - [sasha0552/nvidia-pstated](https://github.com/sasha0552/nvidia-pstated)
