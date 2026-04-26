@@ -1,0 +1,20 @@
+#!/sbin/openrc-run
+# OpenRC service for nouveau-pstate-daemon
+
+name="nouveau-pstate-daemon"
+description="Load-based nouveau pstate switcher for NVAC"
+command="/usr/local/bin/nouveau-pstate-daemon"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+
+depend() {
+    need localmount
+    after sysfs
+}
+
+start_pre() {
+    if [[ ! -f /sys/kernel/debug/dri/0/pstate ]]; then
+        eerror "/sys/kernel/debug/dri/0/pstate missing — debugfs not mounted or nouveau not loaded"
+        return 1
+    fi
+}
