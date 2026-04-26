@@ -22,6 +22,7 @@
 #PSTATE_FILE=/sys/kernel/debug/dri/0/pstate
 #IRQ_NAME=nvkm
 #LOG_FILE=/var/log/nouveau-pstate.log
+#STATE_FILE=/run/nouveau-pstate.state    # world-readable, holds current pstate (for conky etc.)
 
 export SAMPLE_INTERVAL UP_THRESHOLD UP_HOLD DOWN_THRESHOLD DOWN_HOLD
-export PSTATE_LOAD PSTATE_IDLE PSTATE_FILE IRQ_NAME LOG_FILE
+export PSTATE_LOAD PSTATE_IDLE PSTATE_FILE IRQ_NAME LOG_FILE STATE_FILE

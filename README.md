@@ -109,6 +109,31 @@ All overridable via `/etc/conf.d/nouveau-pstate-daemon` or environment:
 | `PSTATE_FILE` | `/sys/kernel/debug/dri/0/pstate` | Where to write. |
 | `IRQ_NAME` | `nvkm` | Token to grep in `/proc/interrupts`. |
 | `LOG_FILE` | `/var/log/nouveau-pstate.log` | Pstate-transition log. |
+| `STATE_FILE` | `/run/nouveau-pstate.state` | World-readable single-line file holding the currently active pstate, updated atomically on each transition. Removed on daemon stop. Useful for integrating with status bars, conky, waybar etc. |
+
+## Integrating with conky / waybar / etc.
+
+The daemon publishes the current pstate to `/run/nouveau-pstate.state` (mode
+0644). A minimal conky helper that renders it as colored markup:
+
+```sh
+#!/bin/bash
+state=$(cat /run/nouveau-pstate.state 2>/dev/null)
+case "$state" in
+    03) printf '${color2}IDLE${color} 150/300 MHz' ;;
+    0e) printf '${color5}LOAD${color} 350/800 MHz' ;;
+    "") printf '${color0}daemon off${color}' ;;
+    *)  printf '${color3}pstate %s${color}' "$state" ;;
+esac
+```
+
+Then in `conky.conf`:
+
+```
+${execpi 5 ~/.config/conky/pstate-line.sh}
+```
+
+The pattern is the same for any status bar that can shell out periodically.
 
 ## Caveats and known limits
 

@@ -18,6 +18,7 @@ set -u
 : "${PSTATE_FILE:=/sys/kernel/debug/dri/0/pstate}"
 : "${IRQ_NAME:=nvkm}"
 : "${LOG_FILE:=/var/log/nouveau-pstate.log}"
+: "${STATE_FILE:=/run/nouveau-pstate.state}"
 
 log() {
     printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
@@ -27,10 +28,20 @@ read_irq_count() {
     awk -v n="$IRQ_NAME" '$0 ~ n {print $2; exit}' /proc/interrupts
 }
 
+publish_state() {
+    local p=$1
+    local tmp="${STATE_FILE}.tmp"
+    if printf '%s\n' "$p" > "$tmp" 2>/dev/null; then
+        chmod 644 "$tmp" 2>/dev/null
+        mv -f "$tmp" "$STATE_FILE" 2>/dev/null
+    fi
+}
+
 set_pstate() {
     local p=$1
     if [[ -w "$PSTATE_FILE" ]]; then
         echo "$p" > "$PSTATE_FILE"
+        publish_state "$p"
         log "pstate -> $p"
     else
         log "ERROR: $PSTATE_FILE not writable"
@@ -41,6 +52,7 @@ set_pstate() {
 cleanup() {
     log "stopping, restoring pstate $PSTATE_LOAD"
     set_pstate "$PSTATE_LOAD" 2>/dev/null
+    rm -f "$STATE_FILE" 2>/dev/null
     exit 0
 }
 trap cleanup SIGTERM SIGINT SIGHUP
