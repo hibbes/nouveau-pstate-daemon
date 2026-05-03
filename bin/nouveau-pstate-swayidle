@@ -1,0 +1,39 @@
+#!/bin/bash
+# nouveau-pstate-swayidle: user-session swayidle wrapper.
+# Launches swayidle with handlers that toggle the GPU pstate via the privileged
+# helper /usr/local/bin/nv-pstate (sudo, NOPASSWD via sudoers fragment).
+#
+# Designed to be started from ~/.config/labwc/autostart on Wayland sessions.
+#
+# Env overrides:
+#   NOUVEAU_PSTATE_IDLE_TIMEOUT  seconds to idle before downclock (default 60)
+#   NOUVEAU_PSTATE_IDLE          idle pstate (default 0e)
+#   NOUVEAU_PSTATE_ACTIVE        active pstate (default 03)
+#   NV_PSTATE_BIN                helper path (default /usr/local/bin/nv-pstate)
+
+set -u
+
+: "${NOUVEAU_PSTATE_IDLE_TIMEOUT:=60}"
+: "${NOUVEAU_PSTATE_IDLE:=0e}"
+: "${NOUVEAU_PSTATE_ACTIVE:=03}"
+: "${NV_PSTATE_BIN:=/usr/local/bin/nv-pstate}"
+
+if ! command -v swayidle >/dev/null 2>&1; then
+    printf 'nouveau-pstate-swayidle: swayidle not found in PATH\n' >&2
+    exit 127
+fi
+if [[ ! -x "$NV_PSTATE_BIN" ]]; then
+    printf 'nouveau-pstate-swayidle: %s not executable\n' "$NV_PSTATE_BIN" >&2
+    exit 127
+fi
+
+idle_cmd="sudo -n $NV_PSTATE_BIN $NOUVEAU_PSTATE_IDLE"
+active_cmd="sudo -n $NV_PSTATE_BIN $NOUVEAU_PSTATE_ACTIVE"
+
+exec swayidle -w \
+    timeout "$NOUVEAU_PSTATE_IDLE_TIMEOUT" "$idle_cmd" \
+        resume "$active_cmd" \
+    before-sleep "$idle_cmd" \
+    after-resume "$active_cmd" \
+    lock         "$idle_cmd" \
+    unlock       "$active_cmd"
