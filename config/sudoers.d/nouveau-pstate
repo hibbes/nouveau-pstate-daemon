@@ -1,0 +1,6 @@
+# Allow members of the 'nouveau-pstate' group to run the privileged write
+# helper without a password, restricted to the helper's exact path.
+#
+# Install with: install -m 0440 config/sudoers.d/nouveau-pstate /etc/sudoers.d/
+# After installing, add your user to the group:  usermod -aG nouveau-pstate <user>
+%nouveau-pstate ALL=(root) NOPASSWD: /usr/local/bin/nv-pstate
