@@ -7,15 +7,15 @@
 #
 # Env overrides:
 #   NOUVEAU_PSTATE_IDLE_TIMEOUT  seconds to idle before downclock (default 60)
-#   NOUVEAU_PSTATE_IDLE          idle pstate (default 0e)
-#   NOUVEAU_PSTATE_ACTIVE        active pstate (default 03)
+#   NOUVEAU_PSTATE_IDLE          idle pstate (default 03 - 150/300 MHz, cool)
+#   NOUVEAU_PSTATE_ACTIVE        active pstate (default 0e - 350/800 MHz)
 #   NV_PSTATE_BIN                helper path (default /usr/local/bin/nv-pstate)
 
 set -u
 
 : "${NOUVEAU_PSTATE_IDLE_TIMEOUT:=60}"
-: "${NOUVEAU_PSTATE_IDLE:=0e}"
-: "${NOUVEAU_PSTATE_ACTIVE:=03}"
+: "${NOUVEAU_PSTATE_IDLE:=03}"
+: "${NOUVEAU_PSTATE_ACTIVE:=0e}"
 : "${NV_PSTATE_BIN:=/usr/local/bin/nv-pstate}"
 
 if ! command -v swayidle >/dev/null 2>&1; then

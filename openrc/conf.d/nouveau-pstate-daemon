@@ -1,8 +1,8 @@
 # nouveau-pstate-daemon configuration (v0.2.0+).
 #
 # BOOT_PSTATE: pstate to set at boot and on service stop.
-#   0e = idle/350 MHz (energy-efficient, default)
-#   03 = active/800 MHz (always-fast, no power saving)
+#   0e = active/350 MHz core, 800 MHz shader (matches v0.1.0 initial state, default)
+#   03 = idle/150 MHz core, 300 MHz shader (max power saving until session bridge takes over)
 BOOT_PSTATE=0e
 
 # Path to the privileged write helper. Override only if you installed elsewhere.

@@ -53,5 +53,6 @@ without requiring out-of-tree kernel patches.
 ## v0.1.0 — 2026-05-03
 
 Initial public release. Load-based polling daemon (2 s sample, hysteresis
-16 s DOWN / 4 s UP) toggling between pstate `0e` (350 MHz) and `03`
-(800 MHz). Reference hardware: Apple Mac mini Late 2009 (NVAC/MCP79).
+16 s DOWN / 4 s UP) toggling between pstate `03` (150/300 MHz, idle) and
+`0e` (350/800 MHz, active). Reference hardware: Apple Mac mini Late 2009
+(NVAC/MCP79).

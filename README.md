@@ -5,10 +5,13 @@ graphics. Reference hardware: Apple Mac mini Late 2009 (NVIDIA 9400M, MCP79).
 
 ## What it does
 
-Keeps the GPU at a low pstate (`0e`, ~350 MHz) when the user session is idle
-and bumps it to a higher pstate (`03`, ~800 MHz) when the user is active.
-Both states share the same VBIOS voltage rail on NVAC, so transitions are
-voltage-neutral and safe.
+Keeps the GPU at a low pstate (`03`, 150 MHz core / 300 MHz shader) when
+the user session is idle and bumps it to a higher pstate (`0e`, 350 MHz
+core / 800 MHz shader) when the user is active. Both states share the
+same VBIOS voltage rail (0.90 V) on NVAC, so transitions are
+voltage-neutral and safe. The boot-pin service starts the GPU at `0e`
+to match the BIOS default; the user-session bridge then drops to `03`
+after `NOUVEAU_PSTATE_IDLE_TIMEOUT` seconds of input inactivity.
 
 ## How it works
 
@@ -80,8 +83,8 @@ Bridge env (export from autostart):
 | variable | default | meaning |
 |---|---|---|
 | `NOUVEAU_PSTATE_IDLE_TIMEOUT` | `60` | idle seconds before downclock |
-| `NOUVEAU_PSTATE_IDLE` | `0e` | pstate when idle |
-| `NOUVEAU_PSTATE_ACTIVE` | `03` | pstate when active |
+| `NOUVEAU_PSTATE_IDLE` | `03` | pstate when idle (150/300 MHz) |
+| `NOUVEAU_PSTATE_ACTIVE` | `0e` | pstate when active (350/800 MHz) |
 
 ## Compositor support
 
