@@ -27,7 +27,12 @@ if [[ ! -x "$NV_PSTATE_BIN" ]]; then
     exit 127
 fi
 
+# swayidle passes each command as a single string to `sh -c`, so word-splitting
+# happens at swayidle's child shell -- not in the bridge. Do NOT quote the
+# inner expansions; that would defeat the intended sh -c execution model.
+# shellcheck disable=SC2086
 idle_cmd="sudo -n $NV_PSTATE_BIN $NOUVEAU_PSTATE_IDLE"
+# shellcheck disable=SC2086
 active_cmd="sudo -n $NV_PSTATE_BIN $NOUVEAU_PSTATE_ACTIVE"
 
 exec swayidle -w \
