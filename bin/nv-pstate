@@ -1,0 +1,77 @@
+#!/bin/bash
+# nv-pstate: privileged write helper for /sys/kernel/debug/dri/0/pstate.
+# Called from boot-pinning service or user-session swayidle bridge via sudo.
+#
+# Usage: nv-pstate <pstate>
+#   pstate ::= 0e | 03 | auto | force_auto
+#
+# Env overrides (testing):
+#   PSTATE_FILE          target file (default /sys/kernel/debug/dri/0/pstate)
+#   LOG_FILE             append-log (default /var/log/nouveau-pstate.log)
+#   STATE_FILE           last-state cache (default /run/nouveau-pstate.state)
+#   DMESG_CHECK_DISABLE  if set non-empty, skip the dmesg pre-check
+
+set -u
+
+: "${PSTATE_FILE:=/sys/kernel/debug/dri/0/pstate}"
+: "${LOG_FILE:=/var/log/nouveau-pstate.log}"
+: "${STATE_FILE:=/run/nouveau-pstate.state}"
+: "${DMESG_CHECK_DISABLE:=}"
+: "${DMESG_LOOKBACK:=120}"
+
+ALLOWED='^(0e|03|auto|force_auto)$'
+
+log() {
+    mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+    printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE" 2>/dev/null || \
+        printf '%s\n' "$*" >&2
+}
+
+usage() {
+    printf 'usage: %s <0e|03|auto|force_auto>\n' "$0" >&2
+    exit 64
+}
+
+[[ $# -eq 1 ]] || usage
+target=$1
+[[ $target =~ $ALLOWED ]] || { log "reject: invalid pstate '$target'"; exit 64; }
+
+# Idempotence: if last-state matches, no-op silently.
+if [[ -r "$STATE_FILE" ]]; then
+    last=$(cat "$STATE_FILE" 2>/dev/null || true)
+    if [[ "$last" == "$target" ]]; then
+        exit 0
+    fi
+fi
+
+# Best-effort dmesg pre-check. Requires CAP_SYSLOG or root.
+# If we see recent channel-fault / wedge evidence, skip the write to avoid
+# kicking the kernel work item again on a dead engine.
+if [[ -z "$DMESG_CHECK_DISABLE" ]] && command -v journalctl >/dev/null 2>&1; then
+    fault=$(journalctl -k --since "${DMESG_LOOKBACK} seconds ago" --no-pager 2>/dev/null | \
+        grep -E 'TRAP_CCACHE|PT_NOT_PRESENT|PAGE_NOT_PRESENT|errored - disabling channel|gt215_clk_pre' | \
+        tail -1)
+    if [[ -n "$fault" ]]; then
+        log "skip $target: recent fault in dmesg ($fault)"
+        exit 0
+    fi
+fi
+
+if [[ ! -e "$PSTATE_FILE" ]]; then
+    log "fatal: $PSTATE_FILE does not exist"
+    exit 71
+fi
+if [[ ! -w "$PSTATE_FILE" ]]; then
+    log "fatal: $PSTATE_FILE not writable"
+    exit 77
+fi
+
+if printf '%s\n' "$target" > "$PSTATE_FILE" 2>/dev/null; then
+    log "pstate -> $target"
+    mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
+    printf '%s\n' "$target" > "$STATE_FILE" 2>/dev/null || true
+    exit 0
+fi
+
+log "error: write '$target' to $PSTATE_FILE failed (errno=$?)"
+exit 74
