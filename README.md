@@ -1,223 +1,120 @@
 # nouveau-pstate-daemon
 
-A small userspace daemon that toggles the nouveau driver's `pstate` between
-idle and load levels based on GPU activity, on Tesla-class NVIDIA hardware.
+Event-driven nouveau GPU pstate switcher for NVAC / NV50-Tesla integrated
+graphics. Reference hardware: Apple Mac mini Late 2009 (NVIDIA 9400M, MCP79).
 
-Tested on **NVAC (MCP79/MCP7A) integrated GeForce 9400M** in an Apple Mac mini
-(Late 2009). The general approach should work on other Tesla GPUs with
-appropriate re-calibration; see "Calibration" below.
+## What it does
 
-## Why this exists
+Keeps the GPU at a low pstate (`0e`, ~350 MHz) when the user session is idle
+and bumps it to a higher pstate (`03`, ~800 MHz) when the user is active.
+Both states share the same VBIOS voltage rail on NVAC, so transitions are
+voltage-neutral and safe.
 
-nouveau's in-kernel pstate machinery on Tesla is purely manual: you can write
-`/sys/kernel/debug/dri/0/pstate` to set a level, but the driver never raises
-or lowers it on its own. Cards therefore sit at their boot pstate
-indefinitely. On NVAC that boot pstate is `0e` (350 MHz core / 800 MHz
-shader), which is hotter and louder than necessary for desktop idle.
+## How it works
 
-This daemon fills that gap. It watches the nouveau MSI interrupt rate via
-`/proc/interrupts` and switches between two pstates with hysteresis:
+```
+                       boot
+                        |
+                        v
+              +-------------------+
+              |  OpenRC oneshot   |  set BOOT_PSTATE (0e by default)
+              |  nouveau-pstate-  |
+              |  daemon           |
+              +-------------------+
 
-- Below `DOWN_THRESHOLD` for `DOWN_HOLD` consecutive samples → `PSTATE_IDLE`.
-- At or above `UP_THRESHOLD` for `UP_HOLD` consecutive samples → `PSTATE_LOAD`.
-
-## Why it is reasonably safe on NVAC
-
-Inspection of the on-board VBIOS perf table on the Mac mini Late 2009 shows
-two relevant facts:
-
-| Pstate | Core | Shader | Voltage |
-|--------|------|--------|---------|
-| `03` | 150 MHz | 300 MHz | 0.90 V |
-| `0e` | 350 MHz | 800 MHz | 0.90 V |
-| `0f` | 450 MHz | 1100 MHz | 1.01 V |
-
-1. Pstates `03` and `0e` share the same voltage (0.90 V), so toggling
-   between them is a pure frequency change with no voltage transition.
-2. Memory clock on NVAC is hardcoded to 0 in `nvkm/subdev/clk/mcp77.c`, so
-   no memory reclocking is performed. The historical Tesla failure mode
-   "memory retraining causes scanout corruption / X lockup" cannot trigger.
-
-These two properties together make `03 ↔ 0e` the lowest-risk pstate
-transition available on this silicon. The daemon does **not** touch `0f`
-without manual override, because `0f` requires the voltage controller
-to be exercised and that path is less verified on Apple-branded VBIOS.
-
-## Background: why 03 ↔ 0e and not 0f
-
-The Apple Mac mini Late 2009 VBIOS exposes four pstates: `03`, `05`, `0e`,
-and `0f`. The daemon only ever toggles between `03` and `0e`. This section
-documents why.
-
-### `05` is functionally identical to `03`
-
-Both report `core 150 MHz / shader 300 MHz / 0.90V`. They differ only in
-the memory-timing index they reference (96 vs 131). On NVAC the memory
-clock is hardcoded to 0 in `nvkm/subdev/clk/mcp77.c` (the IGP shares the
-host's memory controller, so there is nothing to reclock), which makes the
-timing index difference moot. There is no power or performance benefit to
-switching to `05` over `03`.
-
-### `0f` is empirically slower than `0e`
-
-Measured `glxgears -geometry 800x800` with `vblank_mode=0`:
-
-| pstate | clocks | voltage | FPS |
-|---|---|---|---|
-| `03` | 150 / 300 MHz | 0.90 V | 216 |
-| `0e` | 350 / 800 MHz | 0.90 V | 484 |
-| `0f` | 450 / 1100 MHz | 1.01 V | 367 (slower than `0e`!) |
-
-The cause is in nouveau itself, not the VBIOS. `nvkm_voltgpio_init()` in
-`drivers/gpu/drm/nouveau/nvkm/subdev/volt/gpio.c` walks the
-`vid_mask` parsed from the VBIOS voltage table and tries to resolve each
-bit to a board GPIO line via the GPIO table. If a GPIO is missing, the
-code masks the bit out and continues, with a debug-level log line and no
-error. The relevant comment from the source:
-
-> on some boards the vid mask has more bits than there are valid gpio
-> functions ... from traces, nvidia appear to just touch the existing
-> ones, so let's mask off the invalid bits and continue with life
-
-On the Apple MCP79 VBIOS the GPIO table only declares display-related
-pins (`HPD_0`, `HPD_1`, `DP_EXT_1`); no VID GPIO entries exist. As a
-result the voltage write for any pstate transition is silently a no-op,
-and `nvkm_volt_set()` returns success. Pstate `0e` and pstate `03` happen
-to share the same `0.90 V` voltage entry, so this no-op is harmless for
-them. Pstate `0f` would need `1.01 V` but never gets it, so the shader
-is asked to run at 1100 MHz on the same `0.90 V` rail it used at 800 MHz
-— a ~38% undervolt relative to spec. The resulting shader-stage stalls
-and replays explain the throughput collapse from 484 to 367 FPS.
-
-The underlying VBIOS issue (missing VID GPIO entries) is an Apple-
-firmware peculiarity, not a nouveau bug. The driver's silent masking is
-a deliberate compatibility behavior. Without firmware modification — for
-which no community tooling exists on Apple MCP79 boards — pstate `0f`
-will continue to underperform `0e` on this hardware, so the daemon
-intentionally avoids it.
-
-### Avoiding `0f` also dodges a wider question
-
-Even on hardware where the GPIO table is complete, raising the GPU rail
-to `1.01 V` enters territory that has not been independently verified by
-this project. On NVAC specifically, the GPU is the IGP block of the
-MCP79 northbridge — the *only* northbridge on the board, carrying the
-PCIe root complex, the host memory controller, and the platform DMI
-link. A voltage-related fault is a whole-system fault, not a graphics
-fault. Skipping `0f` keeps the entire daemon firmly inside the
-voltage-neutral envelope and avoids inheriting that risk class.
-
-## Inspiration / prior art
-
-- [sasha0552/nvidia-pstated](https://github.com/sasha0552/nvidia-pstated)
-  implements the same idea — load-based pstate switching as a daemon — for
-  the proprietary NVIDIA driver. This project does the same job for nouveau
-  on Tesla-class hardware.
-- [ventureoo/nouveau-reclocking](https://github.com/ventureoo/nouveau-reclocking)
-  is a static helper for setting a fixed pstate; complementary, not
-  overlapping.
-
-## Status
-
-- Verified: NVAC / MCP79 / GeForce 9400M IGP on Mac mini Late 2009, kernel
-  `6.18.22-gentoo-dist`, OpenRC.
-- Unverified on other Tesla SKUs; thresholds will need re-calibration and
-  the safety claim about voltage-neutral 03↔0e depends on the per-card
-  VBIOS perf table.
-
-## Install (OpenRC, Gentoo)
-
-```sh
-sudo install -m 0755 bin/nouveau-pstate-daemon /usr/local/bin/
-sudo install -m 0755 openrc/init.d/nouveau-pstate-daemon /etc/init.d/
-sudo install -m 0644 openrc/conf.d/nouveau-pstate-daemon /etc/conf.d/
+       user logs into Wayland session (labwc, sway, hyprland, ...)
+                        |
+                        v
+       compositor autostart launches:
+              +-------------------+
+              | swayidle bridge   |  ext-idle-notify-v1 events
+              +---------+---------+
+                        |
+              sudo /usr/local/bin/nv-pstate {0e|03}
+                        |
+                        v
+              /sys/kernel/debug/dri/0/pstate
 ```
 
-Test in foreground first; only `rc-update add` once you have observed
-sensible behavior in your own logs.
+The bridge writes pstate only on transitions: idle timeout, resume,
+before-sleep, after-resume, lock, unlock. Typical write count is single
+digits per day instead of dozens to hundreds.
 
-## Calibration
+For workloads with no input but heavy GPU use (full-screen video), the
+bridge respects compositor `zwp_idle_inhibitor_v1` requests, which mpv,
+Firefox, and most video-capable apps set automatically.
 
-The default thresholds (`UP_THRESHOLD=100`, `DOWN_THRESHOLD=80`) were
-derived from a 60s idle / 60s `glxgears` run on the reference hardware.
-Other Tesla cards or other workloads will produce a different distribution.
-Re-run the calibration before trusting the defaults:
+## Installation
 
 ```sh
-# baseline (whatever counts as "idle" for your usage)
-prev=$(awk '/nvkm/{print $2}' /proc/interrupts)
-for i in {1..60}; do
-    sleep 1
-    now=$(awk '/nvkm/{print $2}' /proc/interrupts)
-    echo $((now - prev)); prev=$now
-done | sort -n | uniq -c
+git clone https://github.com/hibbes/nouveau-pstate-daemon
+cd nouveau-pstate-daemon
+sudo make install
+sudo groupadd -f nouveau-pstate
+sudo usermod -aG nouveau-pstate $USER
+# log out + log back in for the group change to take effect
+sudo rc-update add nouveau-pstate-daemon default
+sudo rc-service nouveau-pstate-daemon start
+echo '/usr/local/bin/nouveau-pstate-swayidle &' >> ~/.config/labwc/autostart
 ```
 
-Then repeat under your typical "load" scenario. Pick `UP_THRESHOLD` well
-above the idle distribution's max and `DOWN_THRESHOLD` slightly above the
-idle distribution's mean.
+Restart your Wayland session to pick up the autostart entry.
+
+## Verifying it works
+
+```sh
+cat /run/nouveau-pstate.state          # current pstate as last set
+tail -f /var/log/nouveau-pstate.log    # transitions
+```
 
 ## Tunables
 
-All overridable via `/etc/conf.d/nouveau-pstate-daemon` or environment:
+`/etc/conf.d/nouveau-pstate-daemon`:
 
-| Variable | Default | Meaning |
+| variable | default | meaning |
 |---|---|---|
-| `SAMPLE_INTERVAL` | `2` | Seconds between IRQ-rate samples. |
-| `UP_THRESHOLD` | `100` | IRQ/s at which to up-clock. |
-| `UP_HOLD` | `2` | Consecutive samples above `UP_THRESHOLD` before switching. |
-| `DOWN_THRESHOLD` | `80` | IRQ/s below which to down-clock. |
-| `DOWN_HOLD` | `8` | Consecutive samples at or below `DOWN_THRESHOLD` before switching. |
-| `PSTATE_LOAD` | `0e` | Pstate to use under load. |
-| `PSTATE_IDLE` | `03` | Pstate to use at idle. |
-| `PSTATE_FILE` | `/sys/kernel/debug/dri/0/pstate` | Where to write. |
-| `IRQ_NAME` | `nvkm` | Token to grep in `/proc/interrupts`. |
-| `LOG_FILE` | `/var/log/nouveau-pstate.log` | Pstate-transition log. |
-| `STATE_FILE` | `/run/nouveau-pstate.state` | World-readable single-line file holding the currently active pstate, updated atomically on each transition. Removed on daemon stop. Useful for integrating with status bars, conky, waybar etc. |
+| `BOOT_PSTATE` | `0e` | pstate to pin at boot and on service stop |
 
-## Integrating with conky / waybar / etc.
+Bridge env (export from autostart):
 
-The daemon publishes the current pstate to `/run/nouveau-pstate.state` (mode
-0644). A minimal conky helper that renders it as colored markup:
+| variable | default | meaning |
+|---|---|---|
+| `NOUVEAU_PSTATE_IDLE_TIMEOUT` | `60` | idle seconds before downclock |
+| `NOUVEAU_PSTATE_IDLE` | `0e` | pstate when idle |
+| `NOUVEAU_PSTATE_ACTIVE` | `03` | pstate when active |
 
-```sh
-#!/bin/bash
-state=$(cat /run/nouveau-pstate.state 2>/dev/null)
-case "$state" in
-    03) printf '${color2}IDLE${color} 150/300 MHz' ;;
-    0e) printf '${color5}LOAD${color} 350/800 MHz' ;;
-    "") printf '${color0}daemon off${color}' ;;
-    *)  printf '${color3}pstate %s${color}' "$state" ;;
-esac
-```
+## Compositor support
 
-Then in `conky.conf`:
+Tested on labwc. Should work on any compositor implementing
+`ext-idle-notify-v1` (sway, hyprland, river, niri, kwin_wayland 6+).
+GNOME and KDE Wayland sessions ship their own power management;
+this project does not target them.
 
-```
-${execpi 5 ~/.config/conky/pstate-line.sh}
-```
+X11 sessions are out of scope for the activity-driven part. Install the
+service for boot pinning only and skip the autostart line.
 
-The pattern is the same for any status bar that can shell out periodically.
+## Migration from v0.1.0
 
-## Caveats and known limits
+v0.1.0 was a polling daemon. v0.2.0 replaces it with the design above.
+See [CHANGELOG.md](CHANGELOG.md) for the migration steps.
 
-- Pstate writes use `debugfs`, which is privileged. The daemon must run as
-  root.
-- IRQ-rate is a proxy for GPU activity, not a direct busy counter.
-  Pathological workloads that move large amounts of data per interrupt
-  (long compute kernels) may underclock when they should not. Adjust
-  `DOWN_HOLD` upward if you see this.
-- Suspend/resume is fragile on NVAC independently of this daemon (see
-  [drm/nouveau#148](https://gitlab.freedesktop.org/drm/nouveau/-/issues/148)).
-  The daemon does not interact with the suspend path, but you may need to
-  restart the service after resume if pstate writes start failing.
-- The daemon does not change voltage. The voltage controller path on the
-  Apple NVAC VBIOS has not been independently verified by this project; see
-  the perf-table excerpt above for why this is fine for `03 ↔ 0e` but is
-  the reason `0f` is intentionally avoided.
+## Why event-driven instead of polling?
+
+The polling daemon was the dominant trigger for a kernel WARN-loop on
+Tesla / NVAC after a graphics-channel fault. Each load-curve crossing
+scheduled a clock-reprogram on a wedged engine; the kernel kept retrying
+because userspace kept poking. Event-driven writes happen only on real
+user-activity transitions, which removes the trigger almost entirely
+without requiring out-of-tree kernel patches.
+
+## Hardware reference
+
+- Apple Mac mini Late 2009 (Core 2 Duo, MCP79 chipset)
+- NVIDIA GeForce 9400M IGP (NVAC, NV50/Tesla family)
+- Distros validated on: Gentoo (kernel 7.0.x, OpenRC, labwc)
+
+Other Tesla GPUs (G80–G92, GT2xx) should work but have not been validated.
 
 ## License
 
-GPL-2.0-only. The kernel interfaces this daemon writes to are part of
-GPL-licensed `drivers/gpu/drm/nouveau`, so GPL-2 alignment is the
-idiomatic choice.
+See [LICENSE](LICENSE).
