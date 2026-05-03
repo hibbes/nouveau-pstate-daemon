@@ -10,6 +10,7 @@
 #   LOG_FILE             append-log (default /var/log/nouveau-pstate.log)
 #   STATE_FILE           last-state cache (default /run/nouveau-pstate.state)
 #   DMESG_CHECK_DISABLE  if set non-empty, skip the dmesg pre-check
+#   DMESG_LOOKBACK       seconds to look back in kernel log (default 120)
 
 set -u
 
@@ -73,5 +74,5 @@ if printf '%s\n' "$target" > "$PSTATE_FILE" 2>/dev/null; then
     exit 0
 fi
 
-log "error: write '$target' to $PSTATE_FILE failed (errno=$?)"
+log "error: write '$target' to $PSTATE_FILE failed"
 exit 74
