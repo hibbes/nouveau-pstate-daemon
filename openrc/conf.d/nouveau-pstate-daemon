@@ -1,28 +1,9 @@
-# Config for nouveau-pstate-daemon
-# Override defaults here; commented values show the daemon's built-in defaults.
+# nouveau-pstate-daemon configuration (v0.2.0+).
+#
+# BOOT_PSTATE: pstate to set at boot and on service stop.
+#   0e = idle/350 MHz (energy-efficient, default)
+#   03 = active/800 MHz (always-fast, no power saving)
+BOOT_PSTATE=0e
 
-# Sampling
-#SAMPLE_INTERVAL=2
-
-# Up-clock when IRQ rate >= UP_THRESHOLD for UP_HOLD consecutive samples
-#UP_THRESHOLD=100
-#UP_HOLD=2
-
-# Down-clock when IRQ rate <= DOWN_THRESHOLD for DOWN_HOLD consecutive samples
-#DOWN_THRESHOLD=80
-#DOWN_HOLD=8
-
-# Pstates (hex strings as accepted by /sys/kernel/debug/dri/0/pstate)
-# On NVAC, 03 and 0e share Voltage 0.90V — safe voltage-neutral transition.
-# Avoid 0f (1.01V) without further testing.
-#PSTATE_LOAD=0e
-#PSTATE_IDLE=03
-
-# Paths
-#PSTATE_FILE=/sys/kernel/debug/dri/0/pstate
-#IRQ_NAME=nvkm
-#LOG_FILE=/var/log/nouveau-pstate.log
-#STATE_FILE=/run/nouveau-pstate.state    # world-readable, holds current pstate (for conky etc.)
-
-export SAMPLE_INTERVAL UP_THRESHOLD UP_HOLD DOWN_THRESHOLD DOWN_HOLD
-export PSTATE_LOAD PSTATE_IDLE PSTATE_FILE IRQ_NAME LOG_FILE STATE_FILE
+# Path to the privileged write helper. Override only if you installed elsewhere.
+NV_PSTATE_BIN=/usr/local/bin/nv-pstate

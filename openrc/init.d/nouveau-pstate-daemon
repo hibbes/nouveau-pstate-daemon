@@ -1,20 +1,27 @@
 #!/sbin/openrc-run
-# OpenRC service for nouveau-pstate-daemon
+# nouveau-pstate-daemon: boot-time pstate pin (v0.2.0+).
+# v0.1.0 was a polling daemon; from v0.2.0 the service only sets a safe
+# pstate at boot and reasserts it on stop. The activity-driven part lives
+# in the user session via bin/nouveau-pstate-swayidle.
 
-name="nouveau-pstate-daemon"
-description="Load-based nouveau pstate switcher for NVAC"
-command="/usr/local/bin/nouveau-pstate-daemon"
-command_background=true
-pidfile="/run/${RC_SVCNAME}.pid"
+description="Boot-time nouveau pstate pin (NVAC/Tesla)"
 
 depend() {
     need localmount
     after sysfs
 }
 
-start_pre() {
-    if [[ ! -f /sys/kernel/debug/dri/0/pstate ]]; then
-        eerror "/sys/kernel/debug/dri/0/pstate missing — debugfs not mounted or nouveau not loaded"
-        return 1
-    fi
+: "${BOOT_PSTATE:=0e}"
+: "${NV_PSTATE_BIN:=/usr/local/bin/nv-pstate}"
+
+start() {
+    ebegin "Pinning nouveau pstate to $BOOT_PSTATE"
+    "$NV_PSTATE_BIN" "$BOOT_PSTATE"
+    eend $?
+}
+
+stop() {
+    ebegin "Restoring nouveau pstate to $BOOT_PSTATE on stop"
+    "$NV_PSTATE_BIN" "$BOOT_PSTATE"
+    eend $?
 }
