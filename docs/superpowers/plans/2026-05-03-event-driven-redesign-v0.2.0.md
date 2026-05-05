@@ -807,6 +807,279 @@ git commit -m "docs: rewrite README for v0.2.0 event-driven architecture"
 
 ---
 
+## Task 8.5: Wedge-Recovery Subscriber (DRM `WEDGED=rebind` uAPI)
+
+**Files:**
+- Create: `bin/nouveau-pstate-wedge-handler`
+- Create: `config/udev/99-nouveau-pstate-wedge.rules`
+- Create: `tests/test_wedge_handler.sh`
+- Modify: `Makefile`
+- Modify: `README.md`
+- Modify: `CHANGELOG.md`
+
+**Responsibility.** Subscribe to the DRM `WEDGED=rebind` udev event that the in-tree
+nouveau FIFO recovery path emits (Linux 6.15+ DRM uAPI, validated live on 2026-05-05
+on Mac mini NVAC with patched 7.0.3 kernel). On match, log the event verbatim and set
+a sticky-file `/run/nouveau-pstate.wedged` so status bars and the user can see that
+the GPU asked for rebind. **No automatic rebind in v0.2.0** — auto-rebind on a live
+Wayland session is too disruptive; that is a v0.3.0+ decision.
+
+The subscriber proves the daemon-side of the WEDGED=rebind contract and makes the
+upstream story for the kernel patch round-trip (kernel emits, userspace consumes).
+
+- [ ] **Step 1: Write the smoke test first**
+
+Create `tests/test_wedge_handler.sh`:
+
+```bash
+#!/bin/bash
+# Smoke test for bin/nouveau-pstate-wedge-handler. Mocks the udev env via
+# environment variables and overrides the log + sticky paths for isolation.
+
+set -u
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SELF_DIR/.." && pwd)"
+H="$ROOT/bin/nouveau-pstate-wedge-handler"
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+
+LOG="$WORK/wedge.log"
+STICKY="$WORK/wedged"
+
+fail=0
+
+run() {
+    WEDGE_LOG_FILE="$LOG" WEDGE_STICKY_FILE="$STICKY" \
+        ACTION="$1" SUBSYSTEM="$2" WEDGED="$3" DEVNAME="$4" "$H"
+}
+
+# 1. Matching event: ACTION=change SUBSYSTEM=drm WEDGED=rebind -> log + sticky
+run change drm rebind /dev/dri/card0 || { echo "FAIL: matching event returned non-zero"; fail=1; }
+[[ -s "$LOG" ]] || { echo "FAIL: log empty after match"; fail=1; }
+[[ -f "$STICKY" ]] || { echo "FAIL: sticky file not created"; fail=1; }
+grep -q "WEDGED=rebind" "$LOG" || { echo "FAIL: log missing WEDGED=rebind"; fail=1; }
+grep -q "/dev/dri/card0" "$LOG" || { echo "FAIL: log missing DEVNAME"; fail=1; }
+grep -q "/dev/dri/card0" "$STICKY" || { echo "FAIL: sticky missing DEVNAME"; fail=1; }
+
+# 2. Non-matching ACTION: should no-op (exit 0, no new log entry)
+lines_before=$(wc -l < "$LOG")
+run remove drm rebind /dev/dri/card0 || { echo "FAIL: non-matching exit non-zero"; fail=1; }
+lines_after=$(wc -l < "$LOG")
+[[ "$lines_after" -eq "$lines_before" ]] || { echo "FAIL: non-matching ACTION still logged"; fail=1; }
+
+# 3. Non-matching WEDGED value: should no-op
+lines_before=$(wc -l < "$LOG")
+run change drm bus-reset /dev/dri/card0 || { echo "FAIL: bus-reset exit non-zero"; fail=1; }
+lines_after=$(wc -l < "$LOG")
+[[ "$lines_after" -eq "$lines_before" ]] || { echo "FAIL: non-rebind WEDGED still logged"; fail=1; }
+
+# 4. Missing required env: must exit non-zero (defensive)
+WEDGE_LOG_FILE="$LOG" WEDGE_STICKY_FILE="$STICKY" "$H" && { echo "FAIL: missing env accepted"; fail=1; }
+
+if [[ $fail -eq 0 ]]; then
+    echo "PASS: all wedge-handler smoke tests"
+    exit 0
+else
+    exit 1
+fi
+```
+
+Make executable:
+
+```bash
+chmod +x tests/test_wedge_handler.sh
+```
+
+- [ ] **Step 2: Run the test, expect FAIL (handler does not exist yet)**
+
+```bash
+./tests/test_wedge_handler.sh
+```
+
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `bin/nouveau-pstate-wedge-handler`**
+
+Create `bin/nouveau-pstate-wedge-handler`:
+
+```bash
+#!/bin/bash
+# nouveau-pstate-wedge-handler: udev RUN+= subscriber for the DRM
+# WEDGED=rebind uAPI (Linux 6.15+). Logs the event and sets a sticky
+# file so the user/session can react. Does NOT trigger an automatic
+# unbind/bind in v0.2.0; that decision belongs to a future release.
+#
+# Reads udev environment via standard variables: ACTION, SUBSYSTEM,
+# WEDGED, DEVNAME (others are appended to the log if present).
+#
+# Env overrides (testing):
+#   WEDGE_LOG_FILE       append-log (default /var/log/nouveau-pstate-wedge.log)
+#   WEDGE_STICKY_FILE    sticky last-event marker (default /run/nouveau-pstate.wedged)
+
+set -u
+
+: "${WEDGE_LOG_FILE:=/var/log/nouveau-pstate-wedge.log}"
+: "${WEDGE_STICKY_FILE:=/run/nouveau-pstate.wedged}"
+: "${ACTION:=}"
+: "${SUBSYSTEM:=}"
+: "${WEDGED:=}"
+: "${DEVNAME:=}"
+
+if [[ -z "$ACTION" || -z "$SUBSYSTEM" ]]; then
+    printf 'nouveau-pstate-wedge-handler: missing ACTION/SUBSYSTEM env\n' >&2
+    exit 64
+fi
+
+if [[ "$ACTION" != "change" || "$SUBSYSTEM" != "drm" || "$WEDGED" != "rebind" ]]; then
+    exit 0
+fi
+
+ts=$(date '+%Y-%m-%d %H:%M:%S')
+mkdir -p "$(dirname "$WEDGE_LOG_FILE")" 2>/dev/null || true
+mkdir -p "$(dirname "$WEDGE_STICKY_FILE")" 2>/dev/null || true
+
+{
+    printf '%s WEDGED=rebind DEVNAME=%s SUBSYSTEM=drm ACTION=change\n' \
+        "$ts" "${DEVNAME:-?}"
+} >> "$WEDGE_LOG_FILE" 2>/dev/null || true
+
+{
+    printf 'ts=%s\n' "$ts"
+    printf 'WEDGED=%s\n' "$WEDGED"
+    printf 'DEVNAME=%s\n' "$DEVNAME"
+    printf 'SUBSYSTEM=%s\n' "$SUBSYSTEM"
+    printf 'ACTION=%s\n' "$ACTION"
+    [[ -n "${DEVPATH:-}" ]] && printf 'DEVPATH=%s\n' "$DEVPATH"
+    [[ -n "${SEQNUM:-}"  ]] && printf 'SEQNUM=%s\n'  "$SEQNUM"
+    [[ -n "${MAJOR:-}"   ]] && printf 'MAJOR=%s\n'   "$MAJOR"
+    [[ -n "${MINOR:-}"   ]] && printf 'MINOR=%s\n'   "$MINOR"
+} > "$WEDGE_STICKY_FILE" 2>/dev/null || true
+
+exit 0
+```
+
+Make executable:
+
+```bash
+chmod +x bin/nouveau-pstate-wedge-handler
+```
+
+- [ ] **Step 4: Run shellcheck and the smoke test**
+
+```bash
+shellcheck bin/nouveau-pstate-wedge-handler tests/test_wedge_handler.sh
+./tests/test_wedge_handler.sh
+```
+
+Expected: zero shellcheck warnings, `PASS: all wedge-handler smoke tests`.
+
+- [ ] **Step 5: Commit handler + test**
+
+```bash
+git add bin/nouveau-pstate-wedge-handler tests/test_wedge_handler.sh
+git commit -m "feat(wedge-handler): subscribe to DRM WEDGED=rebind uAPI (log-only)"
+```
+
+- [ ] **Step 6: Create the udev rule**
+
+```bash
+mkdir -p config/udev
+```
+
+Write `config/udev/99-nouveau-pstate-wedge.rules`:
+
+```
+# Subscribe to the DRM WEDGED=rebind uAPI (Linux 6.15+, in-tree as of
+# nouveau FIFO Tesla recovery patch). The handler runs synchronously in
+# the udev event-processing path, so it must finish quickly. The current
+# implementation is log-only; auto-rebind is intentionally not done here.
+ACTION=="change", SUBSYSTEM=="drm", ENV{WEDGED}=="rebind", RUN+="/usr/local/bin/nouveau-pstate-wedge-handler"
+```
+
+- [ ] **Step 7: Commit udev rule**
+
+```bash
+git add config/udev/99-nouveau-pstate-wedge.rules
+git commit -m "feat(udev): rule routing WEDGED=rebind events to wedge handler"
+```
+
+- [ ] **Step 8: Update Makefile**
+
+Modify `Makefile`:
+
+- Add `UDEVDIR = $(DESTDIR)/etc/udev/rules.d`
+- Add to `SHELLS`: `bin/nouveau-pstate-wedge-handler`
+- In `install`: copy handler to `$(BINDIR)`, copy rule to `$(UDEVDIR)`
+- In `uninstall`: remove handler + rule
+- In `check`: add `bin/nouveau-pstate-wedge-handler` and `tests/test_wedge_handler.sh`
+- In `test`: also run `./tests/test_wedge_handler.sh`
+- Print a hint after install: `Run 'udevadm control --reload-rules' to pick up the wedge rule`
+
+Verify:
+
+```bash
+make check
+make test
+```
+
+- [ ] **Step 9: Commit Makefile changes**
+
+```bash
+git add Makefile
+git commit -m "feat(make): install wedge handler + udev rule, extend check/test"
+```
+
+- [ ] **Step 10: Update README.md**
+
+Add a new section after "Compositor support":
+
+```markdown
+## Wedge recovery (DRM `WEDGED=rebind` uAPI)
+
+Linux 6.15 introduced a generic DRM uAPI for drivers to signal that the
+GPU is wedged and userspace should rebind the driver
+(`drm_dev_wedged_event` / `WEDGED=rebind` udev property). The in-tree
+nouveau FIFO recovery path on Tesla / NVAC emits this event after a
+configurable burst of channel faults (default 10 within 60 s).
+
+This daemon subscribes to those events via a udev rule. When triggered,
+the handler:
+
+- writes a one-line entry to `/var/log/nouveau-pstate-wedge.log`
+- writes a key=value sticky snapshot to `/run/nouveau-pstate.wedged`
+
+It does **not** trigger an automatic unbind/bind in v0.2.0 — that is too
+disruptive on a live Wayland session. Status bars and the user can read
+the sticky file to see whether the GPU has asked for rebind since boot.
+
+To clear the sticky after a manual recovery: `rm /run/nouveau-pstate.wedged`.
+```
+
+Add to the architecture diagram a second arrow from `/dev/dri/card0` back up to a
+"udev WEDGED=rebind" node feeding the handler.
+
+- [ ] **Step 11: Update CHANGELOG.md v0.2.0 entry**
+
+Add to the "Added" section of v0.2.0:
+
+```markdown
+- `bin/nouveau-pstate-wedge-handler` — udev subscriber for the DRM
+  `WEDGED=rebind` uAPI; logs to `/var/log/nouveau-pstate-wedge.log` and
+  sets sticky `/run/nouveau-pstate.wedged`. Log-only in v0.2.0.
+- `config/udev/99-nouveau-pstate-wedge.rules` — udev rule routing the
+  matching events to the handler.
+```
+
+- [ ] **Step 12: Commit doc updates**
+
+```bash
+git add README.md CHANGELOG.md
+git commit -m "docs: document WEDGED=rebind subscriber in README + CHANGELOG"
+```
+
+---
+
 ## Task 9: Local install + smoke verification
 
 **Files:** none
