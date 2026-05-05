@@ -1,0 +1,53 @@
+#!/bin/bash
+# nouveau-pstate-wedge-handler: udev RUN+= subscriber for the DRM
+# WEDGED=rebind uAPI (Linux 6.15+). Logs the event and sets a sticky
+# file so the user/session can react. Does NOT trigger an automatic
+# unbind/bind in v0.2.0; that decision belongs to a future release.
+#
+# Reads udev environment via standard variables: ACTION, SUBSYSTEM,
+# WEDGED, DEVNAME (others are appended to the log if present).
+#
+# Env overrides (testing):
+#   WEDGE_LOG_FILE       append-log (default /var/log/nouveau-pstate-wedge.log)
+#   WEDGE_STICKY_FILE    sticky last-event marker (default /run/nouveau-pstate.wedged)
+
+set -u
+
+: "${WEDGE_LOG_FILE:=/var/log/nouveau-pstate-wedge.log}"
+: "${WEDGE_STICKY_FILE:=/run/nouveau-pstate.wedged}"
+: "${ACTION:=}"
+: "${SUBSYSTEM:=}"
+: "${WEDGED:=}"
+: "${DEVNAME:=}"
+
+if [[ -z "$ACTION" || -z "$SUBSYSTEM" ]]; then
+    printf 'nouveau-pstate-wedge-handler: missing ACTION/SUBSYSTEM env\n' >&2
+    exit 64
+fi
+
+if [[ "$ACTION" != "change" || "$SUBSYSTEM" != "drm" || "$WEDGED" != "rebind" ]]; then
+    exit 0
+fi
+
+ts=$(date '+%Y-%m-%d %H:%M:%S')
+mkdir -p "$(dirname "$WEDGE_LOG_FILE")" 2>/dev/null || true
+mkdir -p "$(dirname "$WEDGE_STICKY_FILE")" 2>/dev/null || true
+
+{
+    printf '%s WEDGED=rebind DEVNAME=%s SUBSYSTEM=drm ACTION=change\n' \
+        "$ts" "${DEVNAME:-?}"
+} >> "$WEDGE_LOG_FILE" 2>/dev/null || true
+
+{
+    printf 'ts=%s\n' "$ts"
+    printf 'WEDGED=%s\n' "$WEDGED"
+    printf 'DEVNAME=%s\n' "$DEVNAME"
+    printf 'SUBSYSTEM=%s\n' "$SUBSYSTEM"
+    printf 'ACTION=%s\n' "$ACTION"
+    [[ -n "${DEVPATH:-}" ]] && printf 'DEVPATH=%s\n' "$DEVPATH"
+    [[ -n "${SEQNUM:-}"  ]] && printf 'SEQNUM=%s\n'  "$SEQNUM"
+    [[ -n "${MAJOR:-}"   ]] && printf 'MAJOR=%s\n'   "$MAJOR"
+    [[ -n "${MINOR:-}"   ]] && printf 'MINOR=%s\n'   "$MINOR"
+} > "$WEDGE_STICKY_FILE" 2>/dev/null || true
+
+exit 0
