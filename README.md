@@ -96,6 +96,32 @@ this project does not target them.
 X11 sessions are out of scope for the activity-driven part. Install the
 service for boot pinning only and skip the autostart line.
 
+## Wedge recovery (DRM `WEDGED=rebind` uAPI)
+
+Linux 6.15 introduced a generic DRM uAPI for drivers to signal that the
+GPU is wedged and userspace should rebind the driver
+(`drm_dev_wedged_event`, exposed as `WEDGED=rebind` udev property). The
+nouveau FIFO recovery path on Tesla / NVAC emits this event after a
+configurable burst of channel faults (default 10 within 60 s) via
+`drm_dev_wedged_event(DRM_WEDGE_RECOVERY_REBIND)`.
+
+This daemon subscribes to those events through a udev rule
+(`/etc/udev/rules.d/99-nouveau-pstate-wedge.rules`). When triggered, the
+handler:
+
+- writes a one-line entry to `/var/log/nouveau-pstate-wedge.log`
+- writes a key=value sticky snapshot to `/run/nouveau-pstate.wedged`
+
+It does **not** trigger an automatic unbind/bind in v0.2.0. Auto-rebind
+on a live Wayland session would tear down the active KMS modeset and
+kill the compositor; that is a deliberate v0.3.0+ decision. Status bars
+and the user can read the sticky file to see whether the GPU has asked
+for rebind since boot. Clear it after a manual recovery:
+
+```sh
+sudo rm /run/nouveau-pstate.wedged
+```
+
 ## Migration from v0.1.0
 
 v0.1.0 was a polling daemon. v0.2.0 replaces it with the design above.

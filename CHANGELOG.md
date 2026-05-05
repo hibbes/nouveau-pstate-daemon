@@ -26,10 +26,19 @@ without requiring out-of-tree kernel patches.
 
 - `bin/nv-pstate` — privileged write helper with optional dmesg pre-check
 - `bin/nouveau-pstate-swayidle` — user-session swayidle bridge
+- `bin/nouveau-pstate-wedge-handler` — udev subscriber for the DRM
+  `WEDGED=rebind` uAPI (Linux 6.15+). Logs to
+  `/var/log/nouveau-pstate-wedge.log` and writes a sticky snapshot to
+  `/run/nouveau-pstate.wedged`. Log-only in v0.2.0; auto-rebind is
+  deferred to a future release because it would tear down the live
+  Wayland session.
 - `config/sudoers.d/nouveau-pstate` — group-scoped sudoers fragment
 - `config/labwc-autostart-snippet.sh` — drop-in autostart example
+- `config/udev/99-nouveau-pstate-wedge.rules` — udev rule routing the
+  matching `WEDGED=rebind` events to the wedge handler
 - `Makefile` — `install`, `uninstall`, `check`, `test` targets
 - `tests/test_nv-pstate.sh` — smoke test
+- `tests/test_wedge_handler.sh` — smoke test for the wedge handler
 
 ### Changed
 
