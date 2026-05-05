@@ -1,0 +1,5 @@
+# Subscribe to the DRM WEDGED=rebind uAPI (Linux 6.15+, in-tree as of
+# nouveau FIFO Tesla recovery patch). The handler runs synchronously in
+# the udev event-processing path, so it must finish quickly. The current
+# implementation is log-only; auto-rebind is intentionally not done here.
+ACTION=="change", SUBSYSTEM=="drm", ENV{WEDGED}=="rebind", RUN+="/usr/local/bin/nouveau-pstate-wedge-handler"
