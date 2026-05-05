@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## v0.2.0 — 2026-05-NN
+## v0.2.0 — 2026-05-05
 
 ### Architecture change
 
