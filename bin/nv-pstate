@@ -9,7 +9,7 @@
 #   PSTATE_FILE          target file (default /sys/kernel/debug/dri/0/pstate)
 #   LOG_FILE             append-log (default /var/log/nouveau-pstate.log)
 #   STATE_FILE           last-state cache (default /run/nouveau-pstate.state)
-#   DMESG_CHECK_DISABLE  if set non-empty, skip the dmesg pre-check
+#   DMESG_CHECK_DISABLE  if set non-empty, skip the recent-fault pre-check
 #   DMESG_LOOKBACK       seconds to look back in kernel log (default 120)
 
 set -u
@@ -22,6 +22,10 @@ set -u
 
 ALLOWED='^(0e|03|auto|force_auto)$'
 
+# Kernel-log patterns that indicate a reclock / channel fault. Shared by the
+# pre-check and the post-write capture below.
+FAULT_RE='error setting pstate|gt215_clk_pre|wedged after [0-9]+ consecutive|consecutive reclock|Reclocking failed|TRAP_CCACHE|PT_NOT_PRESENT|PAGE_NOT_PRESENT|errored - disabling channel'
+
 log() {
     mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
     printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE" 2>/dev/null || \
@@ -31,6 +35,30 @@ log() {
 usage() {
     printf 'usage: %s <0e|03|auto|force_auto>\n' "$0" >&2
     exit 64
+}
+
+# recent_fault <window_seconds>
+# Echo the newest FAULT_RE kernel-log line whose '[ <boot-seconds> ]' timestamp
+# is within <window_seconds> of the current uptime; empty if none.
+#
+# Recency MUST be bounded by the kernel boot-relative timestamp compared to
+# /proc/uptime. Do NOT trust `dmesg --since` (boot-relative stamps make it
+# silently no-op on this util-linux/metalog box) and do NOT bare-`tail` the
+# metalog (no time window at all). Both matched faults of ANY age, so a single
+# day-old fault in the ring buffer or in /var/log/kernel/current pinned the GPU
+# at the active pstate forever (the bridge's idle downclock was skipped on every
+# call). Requires root (this helper is invoked via sudo).
+recent_fault() {
+    local window=$1 now line ts hit=""
+    now=$(cut -d. -f1 /proc/uptime 2>/dev/null); : "${now:=0}"
+    while IFS= read -r line; do
+        [[ "$line" =~ \[[[:space:]]*([0-9]+)\. ]] || continue
+        ts=${BASH_REMATCH[1]}
+        if (( now >= ts && now - ts <= window )); then
+            hit=$line
+        fi
+    done < <( { dmesg 2>/dev/null; [[ -r /var/log/kernel/current ]] && tail -n 1000 /var/log/kernel/current 2>/dev/null; } | grep -E "$FAULT_RE" )
+    printf '%s' "$hit"
 }
 
 [[ $# -eq 1 ]] || usage
@@ -45,15 +73,12 @@ if [[ -r "$STATE_FILE" ]]; then
     fi
 fi
 
-# Best-effort dmesg pre-check. Requires CAP_SYSLOG or root.
-# If we see recent channel-fault / wedge evidence, skip the write to avoid
-# kicking the kernel work item again on a dead engine.
-if [[ -z "$DMESG_CHECK_DISABLE" ]] && command -v journalctl >/dev/null 2>&1; then
-    fault=$(journalctl -k --since "${DMESG_LOOKBACK} seconds ago" --no-pager 2>/dev/null | \
-        grep -E 'TRAP_CCACHE|PT_NOT_PRESENT|PAGE_NOT_PRESENT|errored - disabling channel|gt215_clk_pre' | \
-        tail -1)
+# Skip the reclock if the engine faulted within the last DMESG_LOOKBACK seconds,
+# to avoid kicking the reclock work item on a dead/wedged engine.
+if [[ -z "$DMESG_CHECK_DISABLE" ]]; then
+    fault=$(recent_fault "$DMESG_LOOKBACK")
     if [[ -n "$fault" ]]; then
-        log "skip $target: recent fault in dmesg ($fault)"
+        log "skip $target: recent GPU fault ($fault)"
         exit 0
     fi
 fi
@@ -71,6 +96,11 @@ if printf '%s\n' "$target" > "$PSTATE_FILE" 2>/dev/null; then
     log "pstate -> $target"
     mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
     printf '%s\n' "$target" > "$STATE_FILE" 2>/dev/null || true
+    # The pstate write is synchronous (blocks until nvkm_pstate_prog returns), so
+    # any reclock fault the kernel emitted is already in the log. Capture a
+    # genuinely-recent (<=10s) one inline with the transition for forensics.
+    post=$(recent_fault 10)
+    [[ -n "$post" ]] && log "post-write kernel fault after -> $target: $post"
     exit 0
 fi
 
